@@ -32,7 +32,17 @@ export function ParabolaVisualizer() {
     const lastGhostTimeRef = useRef(0);
     // Smoothed sign of a (palm orientation), starts positive
     const palmSignRef = useRef<number>(1);
-    const smoothedSpreadRef = useRef<number>(0.15);
+    // Smoothed |a| (hand openness)
+    const smoothedOpennessRef = useRef<number>(0.5);
+    // Previous wrist for velocity tracking
+    const prevWristRef = useRef<{ x: number; y: number } | null>(null);
+    // Smoothed a target for extra stability
+    const smoothedARef = useRef<number>(1);
+    // Raw hand landmarks ref for canvas skeleton drawing
+    const rawLandmarksRef = useRef<any[] | null>(null);
+    // Palm normal Z confidence (−1 to 1)
+    const palmConfidenceRef = useRef<number>(1);
+    const [palmConfidence, setPalmConfidence] = useState<number>(1);
 
     const [displayParams, setDisplayParams] = useState<ParabolaParams>({ a: 1, h: 0, k: 0 });
     const [isPinching, setIsPinching] = useState(false);
@@ -50,6 +60,11 @@ export function ParabolaVisualizer() {
 
     const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
     const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+    // 3D distance between two MediaPipe landmarks
+    const dist3D = (p: any, q: any) => {
+        const dx = p.x - q.x, dy = p.y - q.y, dz = (p.z || 0) - (q.z || 0);
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    };
 
     // ── MediaPipe ──────────────────────────────────────────────────────────────
     const initMediaPipe = useCallback(async () => {
@@ -123,68 +138,113 @@ export function ParabolaVisualizer() {
         }
 
         if (results.landmarks && results.landmarks.length > 0) {
-            const landmarks = results.landmarks[0];
-            const wrist = landmarks[0];
-            const thumbTip = landmarks[4];
-            const indexMCP = landmarks[5];
-            const indexTip = landmarks[8];
-            const pinkyMCP = landmarks[17];
-            const pinkyTip = landmarks[20];
+            const lm = results.landmarks[0];
+            rawLandmarksRef.current = lm;
 
-            // Mirror x so hand feels like a mirror
+            // Named landmark references (all 21)
+            const wrist = lm[0];
+            const thumbTip = lm[4];
+            const indexMCP = lm[5];
+            const indexTip = lm[8];
+            const middleMCP = lm[9];
+            const middleTip = lm[12];
+            const ringMCP = lm[13];
+            const ringTip = lm[16];
+            const pinkyMCP = lm[17];
+            const pinkyTip = lm[20];
+
+            // Show index tip as cursor indicator
             fingerPosRef.current = { x: 1 - indexTip.x, y: indexTip.y };
 
-            // ── Pinch detection: index tip ↔ thumb tip ──────────────────────
-            const pdx = indexTip.x - thumbTip.x;
-            const pdy = indexTip.y - thumbTip.y;
-            const pdz = (indexTip.z || 0) - (thumbTip.z || 0);
-            const pinchDist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
-            const pinching = pinchDist < 0.07;
+            // ── Pinch detection with hysteresis ──────────────────────────────
+            const pinchDist = dist3D(indexTip, thumbTip);
+            const wasPinching = isPinchingRef.current;
+            // Enter pinch at 0.055, release at 0.088 — reduces flicker
+            const pinching = wasPinching ? pinchDist < 0.088 : pinchDist < 0.055;
 
-            // ── Palm normal → sign of a ─────────────────────────────────────
-            // Compute two edge vectors from wrist: wrist→indexMCP and wrist→pinkyMCP
-            // Cross product Z tells us if palm faces the camera (+) or away (-)
-            const v1x = indexMCP.x - wrist.x;
-            const v1y = indexMCP.y - wrist.y;
-            const v2x = pinkyMCP.x - wrist.x;
-            const v2y = pinkyMCP.y - wrist.y;
-            const crossZ = v1x * v2y - v1y * v2x; // z-component of cross product
-            // crossZ > 0 → palm faces camera (right hand) → positive a
-            // crossZ < 0 → palm faces away → negative a
-            const rawSign = crossZ > 0 ? 1 : -1;
-            // Smooth the sign to avoid snapping — actually we want snappy sign for clarity
-            palmSignRef.current = rawSign;
-            setPalmSign(rawSign);
+            // ── 3D Palm normal → sign of a ──────────────────────────────────
+            // Vectors in 3D from wrist to index MCP and pinky MCP
+            const v1 = { x: indexMCP.x - wrist.x, y: indexMCP.y - wrist.y, z: (indexMCP.z || 0) - (wrist.z || 0) };
+            const v2 = { x: pinkyMCP.x - wrist.x, y: pinkyMCP.y - wrist.y, z: (pinkyMCP.z || 0) - (wrist.z || 0) };
+            // Full 3D cross product
+            const nx = v1.y * v2.z - v1.z * v2.y;
+            const ny = v1.z * v2.x - v1.x * v2.z;
+            const nz = v1.x * v2.y - v1.y * v2.x;
+            const nMag = Math.sqrt(nx * nx + ny * ny + nz * nz);
+            // Normalized confidence: nz/nMag goes from −1 (away) to +1 (facing)
+            const confidence = nMag > 0.001 ? nz / nMag : 0;
+            palmConfidenceRef.current = confidence;
+            setPalmConfidence(confidence);
+            // Only flip sign when confidence exceeds deadzone (±0.2)
+            if (confidence > 0.2) {
+                palmSignRef.current = 1;
+            } else if (confidence < -0.2) {
+                palmSignRef.current = -1;
+            }
+            // (within ±0.2 deadzone: keep previous sign — stable hold)
+            setPalmSign(palmSignRef.current);
 
-            // ── |a| magnitude: lateral spread index→pinky MCPs ─────────────
-            // Normalized by distance wrist→middle_mcp for scale invariance
-            const spreadDx = pinkyTip.x - indexMCP.x;
-            const spreadDy = pinkyTip.y - indexMCP.y;
-            const rawSpread = Math.sqrt(spreadDx * spreadDx + spreadDy * spreadDy);
-            // Smooth the spread
-            smoothedSpreadRef.current = lerp(smoothedSpreadRef.current, rawSpread, 0.15);
-            // Map spread ~0.08-0.35 → |a| 0.15-4.0
-            const aMag = clamp((smoothedSpreadRef.current - 0.04) / 0.28 * 3.85 + 0.15, 0.15, 4.0);
+            // ── Hand openness → |a| magnitude ───────────────────────────────
+            // Palm center = average of wrist + 4 MCPs (scale-invariant anchor)
+            const palmCx = (wrist.x + indexMCP.x + middleMCP.x + ringMCP.x + pinkyMCP.x) / 5;
+            const palmCy = (wrist.y + indexMCP.y + middleMCP.y + ringMCP.y + pinkyMCP.y) / 5;
+            const palmCz = ((wrist.z || 0) + (indexMCP.z || 0) + (middleMCP.z || 0) + (ringMCP.z || 0) + (pinkyMCP.z || 0)) / 5;
+            const palmCenter = { x: palmCx, y: palmCy, z: palmCz };
+
+            // Avg 3D distance from palm center to each non-thumb fingertip
+            const openness = (
+                dist3D(indexTip, palmCenter) +
+                dist3D(middleTip, palmCenter) +
+                dist3D(ringTip, palmCenter) +
+                dist3D(pinkyTip, palmCenter)
+            ) / 4;
+
+            // Normalize by hand scale: wrist → middle MCP distance
+            const handScale = dist3D(wrist, middleMCP);
+            const normalizedOpen = handScale > 0.01 ? openness / handScale : 0.6;
+            // normalizedOpen: ~0.5 (fist) to ~1.5 (wide open)
+            // Map [0.45, 1.4] → |a| [0.12, 4.0]
+            const aMag = clamp((normalizedOpen - 0.45) / 0.95 * 3.88 + 0.12, 0.12, 4.0);
+            // Smooth openness with a slower rate for stability
+            smoothedOpennessRef.current = lerp(smoothedOpennessRef.current, aMag, 0.10);
+
+            // Combined smoothed a target
+            const newATarg = smoothedOpennessRef.current * palmSignRef.current;
+            smoothedARef.current = lerp(smoothedARef.current, newATarg, 0.08);
 
             isPinchingRef.current = pinching;
             setIsPinching(pinching);
             setHandDetected(true);
 
             if (pinching) {
-                const sf = 0.10;
-                smoothedHandRef.current.x = lerp(smoothedHandRef.current.x, 1 - indexTip.x, sf);
-                smoothedHandRef.current.y = lerp(smoothedHandRef.current.y, indexTip.y, sf);
+                // Use WRIST position for h/k — more stable than fingertips
+                const wristMirX = 1 - wrist.x;
+                const wristY = wrist.y;
 
-                // h: horizontal hand position → [-5, 5]
+                // Velocity damping: if wrist jumps > 15% in one frame, blend less
+                const prev = prevWristRef.current;
+                const jumpDist = prev
+                    ? Math.sqrt((wristMirX - prev.x) ** 2 + (wristY - prev.y) ** 2)
+                    : 0;
+                // Adaptive smooth rate: slower when moving fast to resist jumps
+                const sfPos = jumpDist > 0.15 ? 0.05 : 0.18;
+
+                smoothedHandRef.current.x = lerp(smoothedHandRef.current.x, wristMirX, sfPos);
+                smoothedHandRef.current.y = lerp(smoothedHandRef.current.y, wristY, sfPos);
+                prevWristRef.current = { x: wristMirX, y: wristY };
+
+                // h → [-5, 5], k → [-3, 3]
                 targetParamsRef.current.h = (smoothedHandRef.current.x - 0.5) * 10;
-                // k: vertical hand position → [-3, 3]
                 targetParamsRef.current.k = (0.5 - smoothedHandRef.current.y) * 6;
-                // a: magnitude × sign — allows full flip
-                targetParamsRef.current.a = aMag * palmSignRef.current;
+                targetParamsRef.current.a = smoothedARef.current;
+            } else {
+                prevWristRef.current = null;
             }
         } else {
+            rawLandmarksRef.current = null;
             setHandDetected(false);
             fingerPosRef.current = null;
+            prevWristRef.current = null;
         }
     }, []);
 
@@ -525,8 +585,76 @@ export function ParabolaVisualizer() {
                 ctx.restore();
             }
 
-            // ── Cursor / finger indicator ─────────────────────────────────────
-            if (fingerPosRef.current) {
+            // ── Hand skeleton overlay (camera mode) ──────────────────────────────
+            if (inputMode === "camera" && rawLandmarksRef.current) {
+                const lm = rawLandmarksRef.current;
+                const lx = (i: number) => (1 - lm[i].x) * cw;
+                const ly = (i: number) => lm[i].y * ch;
+                const pinchActive = isPinchingRef.current;
+                const skeletonAlpha = pinchActive ? 0.55 : 0.28;
+                const jointColor = pinchActive ? `rgba(136,171,255,${skeletonAlpha})` : `rgba(200,220,255,${skeletonAlpha})`;
+                const boneColor = pinchActive ? `rgba(136,171,255,${skeletonAlpha * 0.55})` : `rgba(180,200,255,${skeletonAlpha * 0.5})`;
+
+                // Finger chains: [wrist, MCP, PIP, DIP, TIP]
+                const chains = [
+                    [0, 1, 2, 3, 4],       // thumb
+                    [0, 5, 6, 7, 8],        // index
+                    [0, 9, 10, 11, 12],     // middle
+                    [0, 13, 14, 15, 16],    // ring
+                    [0, 17, 18, 19, 20],    // pinky
+                ];
+                // Palm cross-connections
+                const palmLinks = [[0, 5], [5, 9], [9, 13], [13, 17], [0, 17]];
+
+                ctx.save();
+                ctx.lineCap = "round";
+
+                // Draw bones
+                ctx.strokeStyle = boneColor;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                for (const chain of chains) {
+                    for (let i = 0; i < chain.length - 1; i++) {
+                        ctx.moveTo(lx(chain[i]), ly(chain[i]));
+                        ctx.lineTo(lx(chain[i + 1]), ly(chain[i + 1]));
+                    }
+                }
+                for (const [a, b] of palmLinks) {
+                    ctx.moveTo(lx(a), ly(a));
+                    ctx.lineTo(lx(b), ly(b));
+                }
+                ctx.shadowColor = jointColor;
+                ctx.shadowBlur = pinchActive ? 6 : 2;
+                ctx.stroke();
+
+                // Draw joints
+                const tipIndices = [4, 8, 12, 16, 20]; // fingertips (larger)
+                ctx.fillStyle = jointColor;
+                ctx.shadowColor = jointColor;
+                ctx.shadowBlur = pinchActive ? 8 : 3;
+                for (let i = 0; i < 21; i++) {
+                    const r = tipIndices.includes(i) ? 3.5 : 2;
+                    ctx.beginPath();
+                    ctx.arc(lx(i), ly(i), r, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Highlight pinch points (thumb tip + index tip) when close
+                if (pinchActive) {
+                    ctx.fillStyle = "rgba(255,255,255,0.9)";
+                    ctx.shadowColor = "rgba(136,171,255,1)";
+                    ctx.shadowBlur = 16;
+                    ctx.beginPath();
+                    ctx.arc(lx(4), ly(4), 5, 0, Math.PI * 2); ctx.fill();
+                    ctx.beginPath();
+                    ctx.arc(lx(8), ly(8), 5, 0, Math.PI * 2); ctx.fill();
+                }
+
+                ctx.restore();
+            }
+
+            // ── Cursor / finger indicator (mouse mode) ────────────────────────
+            if (fingerPosRef.current && inputMode !== "camera") {
                 const fx = fingerPosRef.current.x * cw;
                 const fy = fingerPosRef.current.y * ch;
                 const active = isPinchingRef.current;
@@ -745,18 +873,44 @@ export function ParabolaVisualizer() {
                                                 : "No hand detected"}
                                         </span>
                                     </div>
-                                    {/* Palm direction indicator */}
+                                    {/* Palm direction + confidence bar */}
                                     {handDetected && (
-                                        <div className="flex items-center gap-2">
-                                            <div
-                                                className="w-1.5 h-1.5 rounded-full shrink-0"
-                                                style={{ backgroundColor: palmSign > 0 ? "#88ABFF" : "#ff8c6b" }}
-                                            />
-                                            <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
-                                                {palmSign > 0
-                                                    ? "Palm facing you — opens ↑"
-                                                    : "Palm facing away — flips ↓"}
-                                            </span>
+                                        <div className="flex flex-col gap-1">
+                                            <div className="flex items-center gap-2">
+                                                <div
+                                                    className="w-1.5 h-1.5 rounded-full shrink-0 transition-colors duration-200"
+                                                    style={{ backgroundColor: palmSign > 0 ? "#88ABFF" : "#ff8c6b" }}
+                                                />
+                                                <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
+                                                    {Math.abs(palmConfidence) < 0.2
+                                                        ? "Palm edge — sign locked"
+                                                        : palmSign > 0
+                                                            ? "Palm toward you — opens ↑"
+                                                            : "Palm away — flips ↓"}
+                                                </span>
+                                            </div>
+                                            {/* Confidence bar: center = deadzone, left = flip, right = up */}
+                                            <div className="flex items-center gap-2 ml-3.5">
+                                                <span className="text-[10px] text-[rgba(255,255,255,0.3)]" style={geoStyle}>↓</span>
+                                                <div className="flex-1 h-[3px] bg-[#222] rounded-full overflow-hidden relative">
+                                                    {/* Deadzone band */}
+                                                    <div className="absolute inset-y-0 left-[40%] w-[20%] bg-[#333] rounded-full" />
+                                                    {/* Confidence fill */}
+                                                    <div
+                                                        className="absolute inset-y-0 rounded-full transition-all duration-100"
+                                                        style={{
+                                                            left: palmConfidence >= 0 ? "50%" : `${(1 + palmConfidence) * 50}%`,
+                                                            right: palmConfidence < 0 ? "50%" : `${(1 - palmConfidence) * 50}%`,
+                                                            backgroundColor: palmConfidence > 0.2
+                                                                ? "rgba(136,171,255,0.7)"
+                                                                : palmConfidence < -0.2
+                                                                    ? "rgba(255,140,107,0.7)"
+                                                                    : "rgba(120,120,120,0.4)",
+                                                        }}
+                                                    />
+                                                </div>
+                                                <span className="text-[10px] text-[rgba(255,255,255,0.3)]" style={geoStyle}>↑</span>
+                                            </div>
                                         </div>
                                     )}
                                 </>
