@@ -645,65 +645,7 @@ export function SineWaveVisualizer() {
                             </span>
                         </div>
 
-                        {/* Status indicators */}
-                        <div className="mt-3 flex flex-col gap-1.5">
-                            <div className="flex items-center gap-2">
-                                <div
-                                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                                    style={{ backgroundColor: cameraStatusColor() }}
-                                />
-                                <span
-                                    className="text-[13px] text-[rgba(255,255,255,0.65)]"
-                                    style={geoStyle}
-                                >
-                                    {cameraStatusText()}
-                                </span>
-                            </div>
 
-                            {inputMode === "camera" && cameraState === "active" && (
-                                <div className="flex items-center gap-2">
-                                    <div
-                                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                                        style={{
-                                            backgroundColor: handDetected
-                                                ? isPinching
-                                                    ? "#88ABFF"
-                                                    : "#00dc96"
-                                                : "#848484",
-                                        }}
-                                    />
-                                    <span
-                                        className="text-[13px] text-[rgba(255,255,255,0.65)]"
-                                        style={geoStyle}
-                                    >
-                                        {handDetected
-                                            ? isPinching
-                                                ? "Pinch active — transforming"
-                                                : "Hand detected — open"
-                                            : "No hand detected"}
-                                    </span>
-                                </div>
-                            )}
-
-                            {inputMode === "mouse" && (
-                                <div className="flex items-center gap-2">
-                                    <div
-                                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                                        style={{
-                                            backgroundColor: isPinching ? "#88ABFF" : "#848484",
-                                        }}
-                                    />
-                                    <span
-                                        className="text-[13px] text-[rgba(255,255,255,0.65)]"
-                                        style={geoStyle}
-                                    >
-                                        {isPinching
-                                            ? "Click active — transforming"
-                                            : "Click + drag to transform"}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
                     </div>
 
                     {/* Mode buttons */}

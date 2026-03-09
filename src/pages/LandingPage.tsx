@@ -17,7 +17,7 @@ export default function LandingPage() {
             <div
                 className="absolute inset-0 z-0"
                 style={{
-                    backgroundImage: "url('/bg-full.png')",
+                    backgroundImage: "url('/bg-full3.png')",
                     backgroundSize: "cover",
                     backgroundPosition: "center",
                 }}
@@ -39,11 +39,11 @@ export default function LandingPage() {
                 className="absolute z-[4] text-white leading-none select-none"
                 style={{
                     fontWeight: 100,
-                    fontSize: "clamp(40px, 7vw, 140px)",
+                    fontSize: "clamp(34px, 5.95vw, 119px)",
                     lineHeight: "100%",
-                    top: "45%",
-                    left: "57%",
-                    transform: "translate(-50%, -50%)",
+                    top: "50%",
+                    left: "50%",
+                    transform: "translate(-50%, -75px)",
                     whiteSpace: "nowrap",
                     letterSpacing: "-0.01em",
                 }}
@@ -52,7 +52,7 @@ export default function LandingPage() {
             </h1>
 
             {/* ── ENTER PORTAL button ── */}
-            <div className="absolute z-[5]" style={{ top: "57%", left: "57%", transform: "translateX(-50%)" }}>
+            <div className="absolute z-[5]" style={{ top: "50%", left: "50%", transform: "translate(-50%, 55px)" }}>
                 <button
                     onClick={() => navigate("/studio")}
                     style={{
@@ -70,7 +70,7 @@ export default function LandingPage() {
                         backdropFilter: "blur(20px)",
                         WebkitBackdropFilter: "blur(20px)",
                         cursor: "pointer",
-                        transition: "opacity 0.2s ease, transform 0.2s ease, background 0.2s ease",
+                        transition: "opacity 0.2s ease, transform 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease",
                         fontFamily: "'Georama', sans-serif",
                         fontVariationSettings: "'wdth' 100",
                         fontWeight: 300,
@@ -79,14 +79,41 @@ export default function LandingPage() {
                         color: "rgba(255,255,255,0.85)",
                     }}
                     onMouseEnter={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.opacity = "0.85";
-                        (e.currentTarget as HTMLButtonElement).style.background = "rgba(220,220,220,0.14)";
-                        (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.02)";
+                        const btn = e.currentTarget as HTMLButtonElement;
+                        btn.style.opacity = "1";
+                        btn.style.background = "rgba(127,161,228,0.10)";
+                        btn.style.transform = "scale(1.02)";
+                        btn.style.borderColor = "#7FA1E4";
+                        btn.style.color = "#7FA1E4";
+                        btn.style.textShadow = "0 0 12px rgba(127,161,228,0.8), 0 0 24px rgba(127,161,228,0.4)";
+                        btn.style.boxShadow = "0 4px 32px 0 rgba(0,0,0,0.18), 0 0 18px 2px rgba(127,161,228,0.25) inset";
                     }}
                     onMouseLeave={(e) => {
-                        (e.currentTarget as HTMLButtonElement).style.opacity = "1";
-                        (e.currentTarget as HTMLButtonElement).style.background = "rgba(200,200,200,0.08)";
-                        (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
+                        const btn = e.currentTarget as HTMLButtonElement;
+                        btn.style.opacity = "1";
+                        btn.style.background = "rgba(200,200,200,0.08)";
+                        btn.style.transform = "scale(1)";
+                        btn.style.borderColor = "rgba(255,255,255,0.18)";
+                        btn.style.color = "rgba(255,255,255,0.85)";
+                        btn.style.textShadow = "none";
+                        btn.style.boxShadow = "0 4px 32px 0 rgba(0,0,0,0.18), 0 0 24px 0 rgba(255,255,255,0.06) inset";
+                    }}
+                    onMouseDown={(e) => {
+                        const btn = e.currentTarget as HTMLButtonElement;
+                        btn.style.background = "rgba(81,116,186,0.18)";
+                        btn.style.borderColor = "#5174BA";
+                        btn.style.color = "#5174BA";
+                        btn.style.textShadow = "0 0 10px rgba(81,116,186,0.9), 0 0 20px rgba(81,116,186,0.5)";
+                        btn.style.boxShadow = "0 4px 32px 0 rgba(0,0,0,0.25), 0 0 18px 2px rgba(81,116,186,0.35) inset";
+                        btn.style.transform = "scale(0.98)";
+                    }}
+                    onMouseUp={(e) => {
+                        const btn = e.currentTarget as HTMLButtonElement;
+                        btn.style.background = "rgba(127,161,228,0.10)";
+                        btn.style.borderColor = "#7FA1E4";
+                        btn.style.color = "#7FA1E4";
+                        btn.style.textShadow = "0 0 12px rgba(127,161,228,0.8), 0 0 24px rgba(127,161,228,0.4)";
+                        btn.style.transform = "scale(1.02)";
                     }}
                 >
                     ENTER PORTAL
