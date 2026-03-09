@@ -30,9 +30,13 @@ export function ParabolaVisualizer() {
     const prevPinchDistRef = useRef<number | null>(null);
     const ghostTrailsRef = useRef<GhostTrail[]>([]);
     const lastGhostTimeRef = useRef(0);
+    // Smoothed sign of a (palm orientation), starts positive
+    const palmSignRef = useRef<number>(1);
+    const smoothedSpreadRef = useRef<number>(0.15);
 
     const [displayParams, setDisplayParams] = useState<ParabolaParams>({ a: 1, h: 0, k: 0 });
     const [isPinching, setIsPinching] = useState(false);
+    const [palmSign, setPalmSign] = useState<number>(1);
     const [cameraState, setCameraState] = useState<CameraState>("idle");
     const [handDetected, setHandDetected] = useState(false);
     const [inputMode, setInputMode] = useState<InputMode>("mouse");
@@ -120,31 +124,54 @@ export function ParabolaVisualizer() {
 
         if (results.landmarks && results.landmarks.length > 0) {
             const landmarks = results.landmarks[0];
-            const indexTip = landmarks[8];
+            const wrist = landmarks[0];
             const thumbTip = landmarks[4];
-            const middleTip = landmarks[12];
+            const indexMCP = landmarks[5];
+            const indexTip = landmarks[8];
+            const pinkyMCP = landmarks[17];
+            const pinkyTip = landmarks[20];
 
-            // Mirror x for natural feel
+            // Mirror x so hand feels like a mirror
             fingerPosRef.current = { x: 1 - indexTip.x, y: indexTip.y };
 
-            // Pinch: index-thumb distance
-            const dx = indexTip.x - thumbTip.x;
-            const dy = indexTip.y - thumbTip.y;
-            const dz = (indexTip.z || 0) - (thumbTip.z || 0);
-            const pinchDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            // ── Pinch detection: index tip ↔ thumb tip ──────────────────────
+            const pdx = indexTip.x - thumbTip.x;
+            const pdy = indexTip.y - thumbTip.y;
+            const pdz = (indexTip.z || 0) - (thumbTip.z || 0);
+            const pinchDist = Math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
             const pinching = pinchDist < 0.07;
 
-            // "a" control: when pinching, secondary spread of middle finger to index
-            const mdx = middleTip.x - indexTip.x;
-            const mdy = middleTip.y - indexTip.y;
-            const fingerSpread = Math.sqrt(mdx * mdx + mdy * mdy);
+            // ── Palm normal → sign of a ─────────────────────────────────────
+            // Compute two edge vectors from wrist: wrist→indexMCP and wrist→pinkyMCP
+            // Cross product Z tells us if palm faces the camera (+) or away (-)
+            const v1x = indexMCP.x - wrist.x;
+            const v1y = indexMCP.y - wrist.y;
+            const v2x = pinkyMCP.x - wrist.x;
+            const v2y = pinkyMCP.y - wrist.y;
+            const crossZ = v1x * v2y - v1y * v2x; // z-component of cross product
+            // crossZ > 0 → palm faces camera (right hand) → positive a
+            // crossZ < 0 → palm faces away → negative a
+            const rawSign = crossZ > 0 ? 1 : -1;
+            // Smooth the sign to avoid snapping — actually we want snappy sign for clarity
+            palmSignRef.current = rawSign;
+            setPalmSign(rawSign);
+
+            // ── |a| magnitude: lateral spread index→pinky MCPs ─────────────
+            // Normalized by distance wrist→middle_mcp for scale invariance
+            const spreadDx = pinkyTip.x - indexMCP.x;
+            const spreadDy = pinkyTip.y - indexMCP.y;
+            const rawSpread = Math.sqrt(spreadDx * spreadDx + spreadDy * spreadDy);
+            // Smooth the spread
+            smoothedSpreadRef.current = lerp(smoothedSpreadRef.current, rawSpread, 0.15);
+            // Map spread ~0.08-0.35 → |a| 0.15-4.0
+            const aMag = clamp((smoothedSpreadRef.current - 0.04) / 0.28 * 3.85 + 0.15, 0.15, 4.0);
 
             isPinchingRef.current = pinching;
             setIsPinching(pinching);
             setHandDetected(true);
 
             if (pinching) {
-                const sf = 0.12;
+                const sf = 0.10;
                 smoothedHandRef.current.x = lerp(smoothedHandRef.current.x, 1 - indexTip.x, sf);
                 smoothedHandRef.current.y = lerp(smoothedHandRef.current.y, indexTip.y, sf);
 
@@ -152,9 +179,8 @@ export function ParabolaVisualizer() {
                 targetParamsRef.current.h = (smoothedHandRef.current.x - 0.5) * 10;
                 // k: vertical hand position → [-3, 3]
                 targetParamsRef.current.k = (0.5 - smoothedHandRef.current.y) * 6;
-                // a: finger spread → [0.2, 4] clamped; negate if y inverted (hand low)
-                const rawA = clamp(fingerSpread * 20, 0.2, 4);
-                targetParamsRef.current.a = rawA;
+                // a: magnitude × sign — allows full flip
+                targetParamsRef.current.a = aMag * palmSignRef.current;
             }
         } else {
             setHandDetected(false);
@@ -200,6 +226,27 @@ export function ParabolaVisualizer() {
                 }
                 : null;
         }
+    }, [inputMode]);
+
+    // ── Scroll wheel controls 'a' in mouse mode ───────────────────────────────
+    useEffect(() => {
+        if (inputMode !== "mouse") return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const onWheel = (e: WheelEvent) => {
+            e.preventDefault();
+            // scrolling up (negative deltaY) = increase a, down = decrease
+            const delta = -e.deltaY * 0.005;
+            const current = targetParamsRef.current.a;
+            // Allow crossing zero smoothly but avoid exactly-zero
+            let next = current + delta;
+            if (Math.abs(next) < 0.08) next = 0.08 * Math.sign(next || 1);
+            targetParamsRef.current.a = clamp(next, -4, 4);
+        };
+
+        canvas.addEventListener("wheel", onWheel, { passive: false });
+        return () => canvas.removeEventListener("wheel", onWheel);
     }, [inputMode]);
 
     // ── Mouse/touch event listeners ────────────────────────────────────────────
@@ -682,21 +729,37 @@ export function ParabolaVisualizer() {
                             </div>
 
                             {inputMode === "camera" && cameraState === "active" && (
-                                <div className="flex items-center gap-2">
-                                    <div
-                                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                                        style={{
-                                            backgroundColor: handDetected
-                                                ? isPinching ? "#88ABFF" : "#00dc96"
-                                                : "#848484",
-                                        }}
-                                    />
-                                    <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
-                                        {handDetected
-                                            ? isPinching ? "Pinch active — transforming" : "Hand detected — open"
-                                            : "No hand detected"}
-                                    </span>
-                                </div>
+                                <>
+                                    <div className="flex items-center gap-2">
+                                        <div
+                                            className="w-1.5 h-1.5 rounded-full shrink-0"
+                                            style={{
+                                                backgroundColor: handDetected
+                                                    ? isPinching ? "#88ABFF" : "#00dc96"
+                                                    : "#848484",
+                                            }}
+                                        />
+                                        <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
+                                            {handDetected
+                                                ? isPinching ? "Pinch active — transforming" : "Hand detected — open"
+                                                : "No hand detected"}
+                                        </span>
+                                    </div>
+                                    {/* Palm direction indicator */}
+                                    {handDetected && (
+                                        <div className="flex items-center gap-2">
+                                            <div
+                                                className="w-1.5 h-1.5 rounded-full shrink-0"
+                                                style={{ backgroundColor: palmSign > 0 ? "#88ABFF" : "#ff8c6b" }}
+                                            />
+                                            <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
+                                                {palmSign > 0
+                                                    ? "Palm facing you — opens ↑"
+                                                    : "Palm facing away — flips ↓"}
+                                            </span>
+                                        </div>
+                                    )}
+                                </>
                             )}
 
                             {inputMode === "mouse" && (
@@ -706,7 +769,7 @@ export function ParabolaVisualizer() {
                                         style={{ backgroundColor: isPinching ? "#88ABFF" : "#848484" }}
                                     />
                                     <span className="text-[13px] text-[rgba(255,255,255,0.55)]" style={geoStyle}>
-                                        {isPinching ? "Click active — transforming" : "Click + drag to transform"}
+                                        {isPinching ? "Drag: move vertex · Scroll: flip" : "Click drag to move · Scroll to flip"}
                                     </span>
                                 </div>
                             )}
@@ -756,17 +819,15 @@ export function ParabolaVisualizer() {
                 <ul className="text-[13px] text-[rgba(255,255,255,0.45)] list-disc ml-5 space-y-0.5">
                     {inputMode === "mouse" ? (
                         <>
-                            <li>Click and drag to move the parabola</li>
-                            <li>Horizontal movement shifts the vertex left/right (h)</li>
-                            <li>Vertical movement shifts the vertex up/down (k)</li>
-                            <li>Drag up/down from press point to stretch/compress (a)</li>
+                            <li>Click and drag to move the vertex (h and k)</li>
+                            <li>Scroll wheel up/down to flip &amp; stretch (a)</li>
                         </>
                     ) : (
                         <>
                             <li>Pinch thumb + index to start transforming</li>
-                            <li>Left/right hand position controls h (vertex shift)</li>
-                            <li>Up/down hand position controls k (vertex height)</li>
-                            <li>Finger spread controls a (stretch &amp; flip)</li>
+                            <li>Hand left/right → h &nbsp;·&nbsp; up/down → k</li>
+                            <li>Finger spread (wide/narrow hand) → stretch magnitude</li>
+                            <li>Palm toward you = opens ↑ &nbsp;·&nbsp; flip away = opens ↓</li>
                         </>
                     )}
                 </ul>
